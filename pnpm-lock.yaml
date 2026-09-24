@@ -112,6 +112,9 @@ importers:
       '@earendil-works/pi-coding-agent':
         specifier: 0.87.0
         version: 0.87.0(ws@8.21.3)
+      '@earendil-works/pi-tui':
+        specifier: 0.87.0
+        version: 0.87.0
 
 packages:
 
@@ -228,6 +231,10 @@ packages:
 
   '@earendil-works/pi-telemetry@0.87.1':
     resolution: {integrity: sha512-MC6TRQH5lgMXpcN+Vku2WMI2T8BsiUPzMQHGo81uqFZD3/9O79WWJAysEDGuzduP6R4tvtgwMLwmqIxynM10JQ==}
+    engines: {node: '>=22.19.0'}
+
+  '@earendil-works/pi-tui@0.87.0':
+    resolution: {integrity: sha512-7gTC0XOgQfVWg4yGxwHINBpCnGl9p4KEC7PXIc8gAwc/cyxSW4VuFQrp+r1YD3oM+rBkoepKwAt6w6+VJ7BCaw==}
     engines: {node: '>=22.19.0'}
 
   '@earendil-works/pi-tui@0.87.1':
@@ -1010,6 +1017,11 @@ snapshots:
       - zod
 
   '@earendil-works/pi-telemetry@0.87.1': {}
+
+  '@earendil-works/pi-tui@0.87.0':
+    dependencies:
+      get-east-asian-width: 1.6.0
+      marked: 18.0.11
 
   '@earendil-works/pi-tui@0.87.1':
     dependencies:

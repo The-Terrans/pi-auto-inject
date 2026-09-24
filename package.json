@@ -1,0 +1,21 @@
+{
+  "name": "pi-auto-inject",
+  "version": "0.1.0",
+  "description": "Pi extension to inject @-referenced file contents into user requests.",
+  "license": "MIT",
+  "packageManager": "pnpm@12.3.4",
+  "keywords": ["pi-package"],
+  "files": ["extensions"],
+  "scripts": {
+    "dev": "pi -e ./extensions/index.ts"
+  },
+  "pi": {
+    "extensions": ["./extensions/index.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.87.0"
+  }
+}

@@ -1,5 +1,5 @@
 import { createReadStream } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -60,14 +60,26 @@ async function prepare(text: string, cwd: string): Promise<File[]> {
         throw new Error("invalid line range");
       }
       const info = await stat(filename);
-      if (!info.isFile()) throw new Error("not a regular file");
-      if (!range && info.size > remaining) throw new Error("exceeds 256 KiB request limit");
-      const bytes = range ? await readRange(filename, range[0], range[1], remaining) : await readFile(filename);
-      if (bytes.length > remaining) throw new Error("exceeds 256 KiB request limit");
-      if (bytes.includes(0)) throw new Error("not UTF-8 text");
-      body = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-      remaining -= bytes.length;
-      content = `<file name=${JSON.stringify(label)}>\n${body}\n</file>`;
+      if (info.isDirectory()) {
+        if (range) throw new Error("line range requires a file");
+        const entries = (await readdir(filename, { withFileTypes: true }))
+          .filter((entry) => entry.isFile()).map((entry) => entry.name).sort();
+        if (!entries.length) throw new Error("directory contains no regular files");
+        const listing = entries.map((name) => `${path}${path.endsWith("/") ? "" : "/"}${name}`).join("\n");
+        const size = Buffer.byteLength(listing);
+        if (size > remaining) throw new Error("exceeds 256 KiB request limit");
+        remaining -= size;
+        content = `<directory name=${JSON.stringify(label)}>\n${listing}\n</directory>`;
+      } else {
+        if (!info.isFile()) throw new Error("not a regular file");
+        if (!range && info.size > remaining) throw new Error("exceeds 256 KiB request limit");
+        const bytes = range ? await readRange(filename, range[0], range[1], remaining) : await readFile(filename);
+        if (bytes.length > remaining) throw new Error("exceeds 256 KiB request limit");
+        if (bytes.includes(0)) throw new Error("not UTF-8 text");
+        body = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+        remaining -= bytes.length;
+        content = `<file name=${JSON.stringify(label)}>\n${body}\n</file>`;
+      }
     } catch (cause) {
       error = true;
       const reason = cause instanceof Error && !('code' in cause) ? cause.message : "cannot read file";

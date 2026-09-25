@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -158,14 +158,46 @@ test("absolute and missing paths show separate read and error results", async ()
   });
 });
 
-test("directory references produce an error, not recursive contents", async () => {
-  await setup(async ({ cwd, input, start }) => {
+test("directories list immediate filenames, not file contents, subdirectories or symlinks", async () => {
+  await setup(async ({ cwd, input, start, render }) => {
     await mkdir(join(cwd, "folder"));
-    await writeFile(join(cwd, "folder", "secret.txt"), "not injected");
+    await mkdir(join(cwd, "folder", "nested"));
+    await writeFile(join(cwd, "folder", "z.txt"), "z".repeat(256 * 1024 + 1));
+    await writeFile(join(cwd, "folder", "a.md"), "@../secret.txt");
+    await writeFile(join(cwd, "folder", "nested", "hidden.txt"), "hidden");
+    await writeFile(join(cwd, "secret.txt"), "SECRET");
+    await symlink(join(cwd, "secret.txt"), join(cwd, "folder", "link.txt"));
     assert.deepEqual(await input("Read @folder"), { action: "continue" });
     const { message } = start();
-    assert.equal(message.content, '<file name="folder" error="not a regular file" />');
-    assert.equal(message.content.includes("not injected"), false);
+    assert.deepEqual(message.details.files.map(({ path }) => path), ["folder"]);
+    assert.equal(message.content, '<directory name="folder">\nfolder/a.md\nfolder/z.txt\n</directory>');
+    assert.doesNotMatch(message.content, /SECRET|hidden|link\.txt|@\.\.\/secret\.txt|z{100}/);
+    assert.match(render(message, false), /read folder/);
+  });
+});
+
+test("empty directories and directory ranges return errors; other files still inject", async () => {
+  await setup(async ({ cwd, input, start }) => {
+    await mkdir(join(cwd, "empty"));
+    await writeFile(join(cwd, "ok.txt"), "works");
+    assert.deepEqual(await input("Check @empty @empty:1 @ok.txt"), { action: "continue" });
+    const { message } = start();
+    assert.match(message.content, /name="empty" error="directory contains no regular files"/);
+    assert.match(message.content, /name="empty:1" error="line range requires a file"/);
+    assert.match(message.content, /<file name="ok\.txt">\nworks\n<\/file>/);
+  });
+});
+
+test("directory listing uses the shared byte budget", async () => {
+  await setup(async ({ cwd, input, start }) => {
+    await mkdir(join(cwd, "folder"));
+    await writeFile(join(cwd, "folder", "one.txt"), "private");
+    await writeFile(join(cwd, "large.txt"), "x".repeat(256 * 1024 - 1));
+    assert.deepEqual(await input("Check @large.txt @folder"), { action: "continue" });
+    const { message } = start();
+    assert.match(message.content, /<file name="large\.txt">/);
+    assert.match(message.content, /name="folder" error="exceeds 256 KiB request limit"/);
+    assert.doesNotMatch(message.content, /private/);
   });
 });
 
@@ -205,12 +237,14 @@ test("queued follow-ups and steering keep @ unchanged, without another model cal
 
 test("queued Markdown references inject one level when the queued prompt runs", async () => {
   await setup(async ({ cwd, input, start, context, sent }) => {
-    await writeFile(join(cwd, "notes.md"), "@one.txt");
-    await writeFile(join(cwd, "one.txt"), "nested");
+    await writeFile(join(cwd, "notes.md"), "@assets");
+    await mkdir(join(cwd, "assets"));
+    await writeFile(join(cwd, "assets", "one.txt"), "nested");
     assert.deepEqual(await input("Check @notes.md", "interactive", "followUp"), { action: "continue" });
     assert.equal(start(), undefined);
     assert.equal(sent.length, 1);
-    assert.match(sent[0].message.content, /<file name="one\.txt">\nnested\n<\/file>/);
+    assert.match(sent[0].message.content, /<directory name="assets">\nassets\/one\.txt\n<\/directory>/);
+    assert.doesNotMatch(sent[0].message.content, /nested/);
     const queued = { ...sent[0].message, role: "custom" };
     assert.deepEqual(context([queued]).messages, []);
     assert.equal(context([queued, { role: "user", content: "Check @notes.md" }]), undefined);

@@ -1,7 +1,7 @@
 import { createReadStream } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
 
@@ -37,16 +37,22 @@ async function readRange(filename: string, start: number, end: number, limit: nu
 async function prepare(text: string, cwd: string): Promise<File[]> {
   let remaining = MAX_BYTES;
   const files: File[] = [];
+  const seen = new Set<string>();
+  const markdown: { body: string; filename: string }[] = [];
 
-  for (const match of text.matchAll(FILE)) {
+  async function add(match: RegExpMatchArray, base: string, nested: boolean): Promise<void> {
     const suffix = match[3]?.match(/:(\d+)(?:-(\d+))?$/);
     const path = match[1] ?? match[2] ?? (suffix ? match[3].slice(0, -suffix[0].length) : match[3]);
     const startText = match[4] ?? suffix?.[1];
     const endText = match[5] ?? suffix?.[2];
     const range = startText === undefined ? undefined : [Number(startText), Number(endText ?? startText)] as const;
     const label = range ? `${path}:${startText}${endText === undefined ? "" : `-${endText}`}` : path;
-    const filename = path.startsWith("~/") ? resolve(homedir(), path.slice(2)) : resolve(cwd, path);
+    const filename = path.startsWith("~/") ? resolve(homedir(), path.slice(2)) : resolve(base, path);
+    const key = JSON.stringify([filename, startText, endText]);
+    if (seen.has(key)) return;
+    seen.add(key);
     let content: string;
+    let body: string | undefined;
     let error = false;
 
     try {
@@ -59,7 +65,7 @@ async function prepare(text: string, cwd: string): Promise<File[]> {
       const bytes = range ? await readRange(filename, range[0], range[1], remaining) : await readFile(filename);
       if (bytes.length > remaining) throw new Error("exceeds 256 KiB request limit");
       if (bytes.includes(0)) throw new Error("not UTF-8 text");
-      const body = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      body = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
       remaining -= bytes.length;
       content = `<file name=${JSON.stringify(label)}>\n${body}\n</file>`;
     } catch (cause) {
@@ -69,8 +75,15 @@ async function prepare(text: string, cwd: string): Promise<File[]> {
     }
 
     files.push({ path: label, content, error });
+    if (!nested && body !== undefined && filename.toLowerCase().endsWith(".md")) {
+      markdown.push({ body, filename });
+    }
   }
 
+  for (const match of text.matchAll(FILE)) await add(match, cwd, false);
+  for (const { body, filename } of markdown) {
+    for (const child of body.matchAll(FILE)) await add(child, dirname(filename), true);
+  }
   return files;
 }
 

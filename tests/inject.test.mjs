@@ -75,6 +75,52 @@ test("single-line references inject just that line, including quoted paths", asy
   });
 });
 
+test("Markdown injects direct @ references relative to itself, but not their references", async () => {
+  await setup(async ({ cwd, input, start, render }) => {
+    await mkdir(join(cwd, "docs"));
+    await writeFile(join(cwd, "snippet.txt"), "wrong directory");
+    await writeFile(join(cwd, "docs", "notes.md"), 'Notes\n@snippet.txt:2\n@"with spaces.txt":1\n@child.md\n@notes.md\n@missing.txt');
+    await writeFile(join(cwd, "docs", "snippet.txt"), "first\nselected\nlast");
+    await writeFile(join(cwd, "docs", "with spaces.txt"), "quoted");
+    await writeFile(join(cwd, "docs", "child.md"), "Do not inject @secret.txt");
+    await writeFile(join(cwd, "docs", "secret.txt"), "SECRET");
+    assert.deepEqual(await input("Summarize @docs/notes.md"), { action: "continue" });
+    const { message } = start();
+    assert.deepEqual(message.details.files.map(({ path }) => path), ["docs/notes.md", "snippet.txt:2", "with spaces.txt:1", "child.md", "missing.txt"]);
+    assert.match(message.content, /<file name="snippet\.txt:2">\nselected\n/);
+    assert.match(message.content, /<file name="with spaces\.txt:1">\nquoted\n/);
+    assert.match(message.content, /name="missing\.txt" error="cannot read file"/);
+    assert.doesNotMatch(message.content, /wrong directory|SECRET|<file name="secret\.txt"/);
+    assert.match(render(message, false), /read docs\/notes\.md \(\+4 files\)/);
+  });
+});
+
+test("explicit Markdown references take priority over nested ones", async () => {
+  await setup(async ({ cwd, input, start }) => {
+    await writeFile(join(cwd, "a.md"), "@b.md");
+    await writeFile(join(cwd, "b.md"), "@leaf.txt");
+    await writeFile(join(cwd, "leaf.txt"), "leaf");
+    assert.deepEqual(await input("Read @a.md and @b.md"), { action: "continue" });
+    const { message } = start();
+    assert.deepEqual(message.details.files.map(({ path }) => path), ["a.md", "b.md", "leaf.txt"]);
+    assert.match(message.content, /<file name="leaf\.txt">\nleaf\n<\/file>/);
+  });
+});
+
+test("Markdown range scans only selected lines; nested reads share byte budget", async () => {
+  await setup(async ({ cwd, input, start }) => {
+    await writeFile(join(cwd, "notes.md"), "@not-selected.txt\n@big.txt @ok.txt\n@also-not-selected.txt");
+    await writeFile(join(cwd, "big.txt"), "x".repeat(256 * 1024));
+    await writeFile(join(cwd, "ok.txt"), "works");
+    assert.deepEqual(await input("Check @notes.md:2"), { action: "continue" });
+    const { message } = start();
+    assert.deepEqual(message.details.files.map(({ path }) => path), ["notes.md:2", "big.txt", "ok.txt"]);
+    assert.match(message.content, /name="big\.txt" error="exceeds 256 KiB request limit"/);
+    assert.match(message.content, /<file name="ok\.txt">\nworks\n<\/file>/);
+    assert.doesNotMatch(message.content, /name="not-selected\.txt"|name="also-not-selected\.txt"/);
+  });
+});
+
 test("ranges work on large files but still enforce selected-byte limit", async () => {
   await setup(async ({ cwd, input, start }) => {
     await writeFile(join(cwd, "huge.txt"), `${"x".repeat(256 * 1024 + 1)}\nselected\n${"y".repeat(256 * 1024 + 1)}`);
@@ -154,6 +200,20 @@ test("queued follow-ups and steering keep @ unchanged, without another model cal
     assert.deepEqual(context([current, ...queued, followUp]).messages, [current, queued[0], followUp]);
     const steering = { role: "user", content: "Check @one.txt:2" };
     assert.equal(context([current, ...queued, followUp, steering]), undefined);
+  });
+});
+
+test("queued Markdown references inject one level when the queued prompt runs", async () => {
+  await setup(async ({ cwd, input, start, context, sent }) => {
+    await writeFile(join(cwd, "notes.md"), "@one.txt");
+    await writeFile(join(cwd, "one.txt"), "nested");
+    assert.deepEqual(await input("Check @notes.md", "interactive", "followUp"), { action: "continue" });
+    assert.equal(start(), undefined);
+    assert.equal(sent.length, 1);
+    assert.match(sent[0].message.content, /<file name="one\.txt">\nnested\n<\/file>/);
+    const queued = { ...sent[0].message, role: "custom" };
+    assert.deepEqual(context([queued]).messages, []);
+    assert.equal(context([queued, { role: "user", content: "Check @notes.md" }]), undefined);
   });
 });
 

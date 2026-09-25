@@ -1,6 +1,6 @@
 {
   "name": "pi-auto-inject",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Pi extension to inject @-referenced file contents into user requests.",
   "license": "MIT",

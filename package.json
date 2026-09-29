@@ -1,6 +1,6 @@
 {
   "name": "pi-auto-inject",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "description": "Pi extension that injects @-referenced files and AGENTS.md references into model context.",
   "author": "The Terrans",

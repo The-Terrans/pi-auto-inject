@@ -19,7 +19,7 @@ async function setup(run) {
     await run({
       cwd,
       input: (text, source = "interactive", streamingBehavior) => handlers.input({ text, source, streamingBehavior }, { cwd }),
-      start: () => handlers.before_agent_start(),
+      start: (contextFiles = []) => handlers.before_agent_start({ systemPromptOptions: { contextFiles } }, { cwd }),
       context: (messages) => handlers.context({ messages }),
       sent,
       render: (message, expanded) => renderers["auto-inject"](
@@ -92,6 +92,50 @@ test("Markdown injects direct @ references relative to itself, but not their ref
     assert.match(message.content, /name="missing\.txt" error="cannot read file"/);
     assert.doesNotMatch(message.content, /wrong directory|SECRET|<file name="secret\.txt"/);
     assert.match(render(message, false), /read docs\/notes\.md \(\+4 files\)/);
+  });
+});
+
+test("loaded AGENTS files expand relative references once, deduplicated with prompt references", async () => {
+  await setup(async ({ cwd, input, start }) => {
+    await mkdir(join(cwd, "docs"));
+    await mkdir(join(cwd, "docs", "assets"));
+    await writeFile(join(cwd, "docs", "snippet.txt"), "first\nselected\nlast");
+    await writeFile(join(cwd, "docs", "child.md"), "Do not follow @secret.txt");
+    await writeFile(join(cwd, "docs", "secret.txt"), "SECRET");
+    await writeFile(join(cwd, "docs", "assets", "one.txt"), "private");
+    await writeFile(join(cwd, "docs", "AGENTS.md"), "@wrong.txt");
+    await writeFile(join(cwd, "docs", "CLAUDE.md"), "@secret.txt");
+    const contextFiles = [
+      { path: join(cwd, "AGENTS.md"), content: "@docs/snippet.txt:2-2 @docs/child.md" },
+      { path: join(cwd, "docs", "AGENTS.md"), content: "@snippet.txt:2 @child.md @assets @missing.txt" },
+      { path: join(cwd, "docs", "CLAUDE.md"), content: "@secret.txt" },
+    ];
+    await input("Check @docs/snippet.txt:2");
+    const { message } = await start(contextFiles);
+    assert.deepEqual(message.details.files.map(({ path }) => path), ["docs/snippet.txt:2", "docs/child.md", "assets", "missing.txt"]);
+    assert.match(message.content, /<file name="docs\/snippet\.txt:2">\nselected/);
+    assert.match(message.content, /<directory name="assets">\nassets\/one\.txt\n<\/directory>/);
+    assert.match(message.content, /name="missing\.txt" error="cannot read file"/);
+    assert.doesNotMatch(message.content, /SECRET|private|wrong\.txt|<file name="secret\.txt"/);
+    assert.equal(start(), undefined);
+  });
+});
+
+test("AGENTS references inject without prompt @ on every turn, with shared request limit", async () => {
+  await setup(async ({ cwd, input, start }) => {
+    await writeFile(join(cwd, "large.txt"), "x".repeat(256 * 1024 - 20));
+    await writeFile(join(cwd, "too-big.txt"), "y".repeat(21));
+    await writeFile(join(cwd, "small.txt"), "ok");
+    const contextFiles = [{ path: join(cwd, "AGENTS.override.md"), content: "@too-big.txt @small.txt" }];
+    await input("Check @large.txt");
+    const { message } = await start(contextFiles);
+    assert.deepEqual(message.details.files.map(({ path }) => path), ["large.txt", "too-big.txt", "small.txt"]);
+    assert.match(message.content, /name="too-big\.txt" error="exceeds 256 KiB request limit"/);
+    assert.match(message.content, /<file name="small\.txt">\nok\n<\/file>/);
+    await input("Continue");
+    const next = await start(contextFiles);
+    assert.deepEqual(next.message.details.files.map(({ path }) => path), ["too-big.txt", "small.txt"]);
+    assert.match(next.message.content, /<file name="too-big\.txt">\ny{21}\n<\/file>/);
   });
 });
 
@@ -232,6 +276,23 @@ test("queued follow-ups and steering keep @ unchanged, without another model cal
     assert.deepEqual(context([current, ...queued, followUp]).messages, [current, queued[0], followUp]);
     const steering = { role: "user", content: "Check @one.txt:2" };
     assert.equal(context([current, ...queued, followUp, steering]), undefined);
+  });
+});
+
+test("queued turns expand loaded AGENTS references without changing the queued prompt", async () => {
+  await setup(async ({ cwd, input, start, context, sent }) => {
+    await writeFile(join(cwd, "leaf.txt"), "from agents");
+    const contextFiles = [{ path: join(cwd, "AGENTS.md"), content: "@leaf.txt" }];
+    await input("Initial turn");
+    assert.match((await start(contextFiles)).message.content, /from agents/);
+    await input("Queued @leaf.txt", "interactive", "followUp");
+    assert.equal(sent.length, 1);
+    assert.deepEqual(sent[0].options, { triggerTurn: false });
+    assert.deepEqual(sent[0].message.details.files.map(({ path }) => path), ["leaf.txt"]);
+    assert.match(sent[0].message.content, /from agents/);
+    const queued = { ...sent[0].message, role: "custom" };
+    assert.deepEqual(context([queued]).messages, []);
+    assert.equal(context([queued, { role: "user", content: "Queued @leaf.txt" }]), undefined);
   });
 });
 

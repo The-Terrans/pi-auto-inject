@@ -1,14 +1,14 @@
 import { createReadStream } from "node:fs";
 import { readFile, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
 
 const MAX_BYTES = 256 * 1024;
 const FILE = /(?<![\w@./])@(?:"([^"\n]+)"|'([^'\n]+)'|([^\s,;!?)}\]"'`]+))(?::(\d+)(?:-(\d+))?)?/g;
 
-type File = { path: string; content: string; error: boolean };
+type File = { path: string; content: string; error: boolean; key: string; bytes: number };
 
 async function readRange(filename: string, start: number, end: number, limit: number): Promise<Buffer> {
   const parts: Buffer[] = [];
@@ -34,10 +34,14 @@ async function readRange(filename: string, start: number, end: number, limit: nu
   return Buffer.concat(parts, total);
 }
 
-async function prepare(text: string, cwd: string): Promise<File[]> {
-  let remaining = MAX_BYTES;
-  const files: File[] = [];
-  const seen = new Set<string>();
+async function prepare(
+  text: string,
+  cwd: string,
+  contextFiles: { path: string; content: string }[] = [],
+  files: File[] = [],
+): Promise<File[]> {
+  let remaining = MAX_BYTES - files.reduce((total, file) => total + file.bytes, 0);
+  const seen = new Set(files.map((file) => file.key));
   const markdown: { body: string; filename: string }[] = [];
 
   async function add(match: RegExpMatchArray, base: string, nested: boolean): Promise<void> {
@@ -48,12 +52,13 @@ async function prepare(text: string, cwd: string): Promise<File[]> {
     const range = startText === undefined ? undefined : [Number(startText), Number(endText ?? startText)] as const;
     const label = range ? `${path}:${startText}${endText === undefined ? "" : `-${endText}`}` : path;
     const filename = path.startsWith("~/") ? resolve(homedir(), path.slice(2)) : resolve(base, path);
-    const key = JSON.stringify([filename, startText, endText]);
+    const key = JSON.stringify([filename, range?.[0], range?.[1]]);
     if (seen.has(key)) return;
     seen.add(key);
     let content: string;
     let body: string | undefined;
     let error = false;
+    let bytesUsed = 0;
 
     try {
       if (range && (!Number.isSafeInteger(range[0]) || !Number.isSafeInteger(range[1]) || range[0] < 1 || range[1] < range[0])) {
@@ -69,6 +74,7 @@ async function prepare(text: string, cwd: string): Promise<File[]> {
         const size = Buffer.byteLength(listing);
         if (size > remaining) throw new Error("exceeds 256 KiB request limit");
         remaining -= size;
+        bytesUsed = size;
         content = `<directory name=${JSON.stringify(label)}>\n${listing}\n</directory>`;
       } else {
         if (!info.isFile()) throw new Error("not a regular file");
@@ -78,6 +84,7 @@ async function prepare(text: string, cwd: string): Promise<File[]> {
         if (bytes.includes(0)) throw new Error("not UTF-8 text");
         body = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
         remaining -= bytes.length;
+        bytesUsed = bytes.length;
         content = `<file name=${JSON.stringify(label)}>\n${body}\n</file>`;
       }
     } catch (cause) {
@@ -86,13 +93,16 @@ async function prepare(text: string, cwd: string): Promise<File[]> {
       content = `<file name=${JSON.stringify(label)} error=${JSON.stringify(reason)} />`;
     }
 
-    files.push({ path: label, content, error });
+    files.push({ path: label, content, error, key, bytes: bytesUsed });
     if (!nested && body !== undefined && filename.toLowerCase().endsWith(".md")) {
       markdown.push({ body, filename });
     }
   }
 
   for (const match of text.matchAll(FILE)) await add(match, cwd, false);
+  for (const file of contextFiles) {
+    for (const match of file.content.matchAll(FILE)) await add(match, dirname(file.path), true);
+  }
   for (const { body, filename } of markdown) {
     for (const child of body.matchAll(FILE)) await add(child, dirname(filename), true);
   }
@@ -110,6 +120,7 @@ function fileMessage(files: File[], queuedText?: string) {
 
 export default function (pi: ExtensionAPI) {
   let pending: File[] = [];
+  let loadedContextFiles: { path: string; content: string }[] = [];
 
   pi.registerMessageRenderer("auto-inject", (message, { expanded, outputPad }, theme) => {
     const files = (message.details as { files: Pick<File, "path" | "error">[] }).files;
@@ -123,8 +134,10 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("input", async (event, ctx) => {
     pending = [];
-    if (event.source === "extension" || !event.text.includes("@")) return { action: "continue" };
-    const files = await prepare(event.text, ctx.cwd);
+    if (event.source === "extension" || (!event.text.includes("@") && !(event.streamingBehavior && loadedContextFiles.length))) {
+      return { action: "continue" };
+    }
+    const files = await prepare(event.text, ctx.cwd, event.streamingBehavior ? loadedContextFiles : []);
     if (event.streamingBehavior) {
       if (files.length) pi.sendMessage(fileMessage(files, event.text), { triggerTurn: false });
     } else {
@@ -133,11 +146,16 @@ export default function (pi: ExtensionAPI) {
     return { action: "continue" };
   });
 
-  pi.on("before_agent_start", () => {
-    if (pending.length === 0) return;
+  pi.on("before_agent_start", (event, ctx) => {
     const files = pending;
     pending = [];
-    return { message: fileMessage(files) };
+    loadedContextFiles = event.systemPromptOptions.contextFiles.filter((file) =>
+      ["agents.md", "agents.override.md"].includes(basename(file.path).toLowerCase()) && file.content.includes("@"),
+    );
+    if (loadedContextFiles.length === 0) return files.length ? { message: fileMessage(files) } : undefined;
+    return prepare("", ctx.cwd, loadedContextFiles, files).then((all) =>
+      all.length ? { message: fileMessage(all) } : undefined,
+    );
   });
 
   // Queued inputs skip before_agent_start. Hold their read results out of the current turn

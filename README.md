@@ -1,18 +1,40 @@
 # pi-auto-inject
 
-Pi extension project for automatically injecting contents of files referenced with `@path` into user requests, instead of leaving references for the model to read later.
+Type `@path` in a Pi prompt. File contents reach the model without a model-initiated `read` call.
 
-Use `@path` anywhere in a prompt to send UTF-8 file contents to the model as a separate, read-like message:
+## Try it
 
-```text
-Summarize @src/index.ts:10-13 and @"notes/meeting notes.md"
-```
+1. Install: `pi install npm:pi-auto-inject`
+2. Start Pi in your project: `pi`
+3. Send: `Summarize @README.md`
 
-Prompt stays unchanged, including `@` references. File contents appear in a separate read-like message, three lines tall when collapsed; expand to see contents. This is a custom message, not an actual `read` tool call. Pi's automatically loaded `AGENTS.md` and `AGENTS.override.md` files also have their `@` references expanded on each agent turn, relative to each context file, without re-reading the context file itself. Duplicate references from the prompt and loaded context files inject only once per turn. Queued steering and follow-ups also keep `@` references unchanged; their file contents become visible to the model only when their queued prompt runs.
+Your prompt keeps `@README.md`. The contents appear in a separate, read-like message, collapsed to three lines until expanded. This is a custom message, **not** a real `read` tool call.
 
-Use `@extensions/index.ts:9` for one line or `@package.json:10-13` for inclusive, 1-based line range; quoted paths also accept suffix (`@"my file.txt":9`). Both forms read only selected lines, even from large files. Prompt paths resolve from Pi's working directory; absolute paths and `~/` paths work too. When a referenced `.md` file is read, its `@` references (including ranges) are injected as additional files, relative to that Markdown file's directory. This is **one level only**: references inside those additional files are not followed. References in loaded AGENTS files use the same one-level rule and share the 256 KiB request limit with prompt references. Only injected Markdown text is scanned, so `@` references in selected-out lines are ignored. `@dir` sends only names of immediate regular files in name order (for example, `dir/a.txt`); it does not read their contents. Subdirectories and symlinks are skipped. Empty directories and line ranges on directories produce error markers. Missing, binary, and oversized files also produce error markers. Total injected text, including directory listings and Markdown references, is limited to 256 KiB per request. Images are not supported. Directory filenames and referenced file contents, including secrets linked from Markdown or loaded AGENTS files, are sent to the model.
+## Choose what to include
 
-## Development
+- `@src/index.ts` — entire UTF-8 file.
+- `@src/index.ts:9` — line 9 only (lines start at 1).
+- `@src/index.ts:9-13` — lines 9 through 13, inclusive.
+- `@"notes/meeting notes.md":9` — quote paths with spaces; ranges still work.
+- `@src` — names of regular files directly inside `src`, **not** their contents. Skips subdirectories and symlinks.
+
+Prompt paths resolve from Pi's working directory. Absolute paths and `~/` paths also work.
+
+## Markdown and AGENTS.md
+
+- A referenced `.md` file can contain `@` references. Those paths resolve relative to that Markdown file.
+- Pi's automatically loaded `AGENTS.md` and `AGENTS.override.md` files also expand their `@` references on each agent turn, relative to each context file. The extension uses Pi's loaded text; it does not reread those context files.
+- Expansion stops after **one level**: references inside additionally included files are not followed. With a line range, only selected Markdown lines are scanned.
+- Duplicate references from the prompt and loaded context files inject once per turn.
+- Queued steering and follow-ups keep their `@` references; their contents reach the model when the queued prompt runs.
+
+## Limits and privacy
+
+- Each request has a shared **256 KiB limit** for file contents, selected lines, Markdown references, and directory listings.
+- Missing, binary, oversized, or invalid references produce error markers rather than partial contents. Images are unsupported. Empty directories and line ranges on directories also produce errors.
+- **Referenced contents can include secrets**, including files linked from Markdown or AGENTS files. Directory filenames also go to the model. Do not reference private files you do not want sent.
+
+## Develop locally
 
 ```sh
 pnpm install
@@ -20,4 +42,4 @@ pnpm test
 pnpm dev
 ```
 
-`pnpm dev` loads the extension for that Pi process only. Use `pi install ./` for a persistent local install.
+`pnpm dev` loads the extension only in that Pi process. To install this checkout persistently, run `pi install ./`.

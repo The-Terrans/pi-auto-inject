@@ -2,10 +2,19 @@
   "name": "pi-auto-inject",
   "version": "0.2.0",
   "type": "module",
-  "description": "Pi extension to inject @-referenced file contents into user requests.",
+  "description": "Pi extension that injects @-referenced files and AGENTS.md references into model context.",
+  "author": "The Terrans",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/The-Terrans/pi-auto-inject.git"
+  },
+  "homepage": "https://github.com/The-Terrans/pi-auto-inject#readme",
+  "bugs": {
+    "url": "https://github.com/The-Terrans/pi-auto-inject/issues"
+  },
   "packageManager": "pnpm@12.3.4",
-  "keywords": ["pi-package"],
+  "keywords": ["pi-package", "pi-extension", "file-injection", "agents.md"],
   "files": ["extensions"],
   "scripts": {
     "dev": "pi -e ./extensions/index.ts",

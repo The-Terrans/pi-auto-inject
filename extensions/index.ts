@@ -109,18 +109,17 @@ async function prepare(
   return files;
 }
 
-function fileMessage(files: File[], queuedText?: string) {
+function fileMessage(files: File[], queuedText?: string, agentContext = false) {
   return {
     customType: "auto-inject",
     content: files.map((file) => file.content).join("\n"),
     display: true,
-    details: { files: files.map(({ path, error }) => ({ path, error })), queuedText },
+    details: { files: files.map(({ path, error }) => ({ path, error })), queuedText, agentContext },
   };
 }
 
 export default function (pi: ExtensionAPI) {
   let pending: File[] = [];
-  let loadedContextFiles: { path: string; content: string }[] = [];
 
   pi.registerMessageRenderer("auto-inject", (message, { expanded, outputPad }, theme) => {
     const files = (message.details as { files: Pick<File, "path" | "error">[] }).files;
@@ -134,10 +133,8 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("input", async (event, ctx) => {
     pending = [];
-    if (event.source === "extension" || (!event.text.includes("@") && !(event.streamingBehavior && loadedContextFiles.length))) {
-      return { action: "continue" };
-    }
-    const files = await prepare(event.text, ctx.cwd, event.streamingBehavior ? loadedContextFiles : []);
+    if (event.source === "extension" || !event.text.includes("@")) return { action: "continue" };
+    const files = await prepare(event.text, ctx.cwd);
     if (event.streamingBehavior) {
       if (files.length) pi.sendMessage(fileMessage(files, event.text), { triggerTurn: false });
     } else {
@@ -149,12 +146,16 @@ export default function (pi: ExtensionAPI) {
   pi.on("before_agent_start", (event, ctx) => {
     const files = pending;
     pending = [];
-    loadedContextFiles = event.systemPromptOptions.contextFiles.filter((file) =>
+    const contextFiles = event.systemPromptOptions.contextFiles.filter((file) =>
       ["agents.md", "agents.override.md"].includes(basename(file.path).toLowerCase()) && file.content.includes("@"),
     );
-    if (loadedContextFiles.length === 0) return files.length ? { message: fileMessage(files) } : undefined;
-    return prepare("", ctx.cwd, loadedContextFiles, files).then((all) =>
-      all.length ? { message: fileMessage(all) } : undefined,
+    const alreadyInjected = contextFiles.length && ctx.sessionManager.getBranch().some((entry) =>
+      entry.type === "custom_message" && entry.customType === "auto-inject" &&
+      (entry.details as { agentContext?: boolean } | undefined)?.agentContext,
+    );
+    if (!contextFiles.length || alreadyInjected) return files.length ? { message: fileMessage(files) } : undefined;
+    return prepare("", ctx.cwd, contextFiles, files).then((all) =>
+      all.length ? { message: fileMessage(all, undefined, true) } : undefined,
     );
   });
 

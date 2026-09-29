@@ -10,6 +10,12 @@ async function setup(run) {
   const handlers = {};
   const renderers = {};
   const sent = [];
+  const branch = [];
+  const ctx = { cwd, sessionManager: { getBranch: () => branch } };
+  function record(result) {
+    if (result?.message) branch.push({ type: "custom_message", customType: result.message.customType, details: result.message.details });
+    return result;
+  }
   extension({
     on(name, fn) { handlers[name] = fn; },
     registerMessageRenderer(name, fn) { renderers[name] = fn; },
@@ -19,7 +25,12 @@ async function setup(run) {
     await run({
       cwd,
       input: (text, source = "interactive", streamingBehavior) => handlers.input({ text, source, streamingBehavior }, { cwd }),
-      start: (contextFiles = []) => handlers.before_agent_start({ systemPromptOptions: { contextFiles } }, { cwd }),
+      start: (contextFiles = []) => {
+        const result = handlers.before_agent_start({ systemPromptOptions: { contextFiles } }, ctx);
+        return result instanceof Promise ? result.then(record) : record(result);
+      },
+      switchSession: (entries = []) => branch.splice(0, branch.length, ...entries),
+      branch: () => branch.slice(),
       context: (messages) => handlers.context({ messages }),
       sent,
       render: (message, expanded) => renderers["auto-inject"](
@@ -121,21 +132,46 @@ test("loaded AGENTS files expand relative references once, deduplicated with pro
   });
 });
 
-test("AGENTS references inject without prompt @ on every turn, with shared request limit", async () => {
-  await setup(async ({ cwd, input, start }) => {
+test("AGENTS references inject once per session, sharing the first prompt's limit", async () => {
+  await setup(async ({ cwd, input, start, branch, switchSession }) => {
     await writeFile(join(cwd, "large.txt"), "x".repeat(256 * 1024 - 20));
     await writeFile(join(cwd, "too-big.txt"), "y".repeat(21));
     await writeFile(join(cwd, "small.txt"), "ok");
     const contextFiles = [{ path: join(cwd, "AGENTS.override.md"), content: "@too-big.txt @small.txt" }];
     await input("Check @large.txt");
     const { message } = await start(contextFiles);
+    assert.equal(message.details.agentContext, true);
     assert.deepEqual(message.details.files.map(({ path }) => path), ["large.txt", "too-big.txt", "small.txt"]);
     assert.match(message.content, /name="too-big\.txt" error="exceeds 256 KiB request limit"/);
     assert.match(message.content, /<file name="small\.txt">\nok\n<\/file>/);
+    const savedSession = branch();
     await input("Continue");
+    assert.equal(start(contextFiles), undefined);
+    await input("Explicit @small.txt still works");
+    const explicit = start(contextFiles).message;
+    assert.deepEqual(explicit.details.files.map(({ path }) => path), ["small.txt"]);
+    assert.equal(explicit.details.agentContext, false);
+    switchSession();
+    await input("New session");
     const next = await start(contextFiles);
     assert.deepEqual(next.message.details.files.map(({ path }) => path), ["too-big.txt", "small.txt"]);
     assert.match(next.message.content, /<file name="too-big\.txt">\ny{21}\n<\/file>/);
+    switchSession(savedSession);
+    await input("Resumed session");
+    assert.equal(start(contextFiles), undefined);
+  });
+});
+
+test("AGENTS references wait until context first loads", async () => {
+  await setup(async ({ cwd, input, start }) => {
+    await writeFile(join(cwd, "leaf.txt"), "loaded later");
+    await input("Before AGENTS loads");
+    assert.equal(start(), undefined);
+    const contextFiles = [{ path: join(cwd, "AGENTS.md"), content: "@leaf.txt" }];
+    await input("After AGENTS loads");
+    assert.match((await start(contextFiles)).message.content, /loaded later/);
+    await input("Continue");
+    assert.equal(start(contextFiles), undefined);
   });
 });
 
@@ -279,12 +315,14 @@ test("queued follow-ups and steering keep @ unchanged, without another model cal
   });
 });
 
-test("queued turns expand loaded AGENTS references without changing the queued prompt", async () => {
+test("queued turns inject only explicit references, not AGENTS references again", async () => {
   await setup(async ({ cwd, input, start, context, sent }) => {
     await writeFile(join(cwd, "leaf.txt"), "from agents");
     const contextFiles = [{ path: join(cwd, "AGENTS.md"), content: "@leaf.txt" }];
     await input("Initial turn");
     assert.match((await start(contextFiles)).message.content, /from agents/);
+    await input("Queued turn", "interactive", "followUp");
+    assert.equal(sent.length, 0);
     await input("Queued @leaf.txt", "interactive", "followUp");
     assert.equal(sent.length, 1);
     assert.deepEqual(sent[0].options, { triggerTurn: false });

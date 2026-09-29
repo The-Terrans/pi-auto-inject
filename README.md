@@ -23,10 +23,10 @@ Prompt paths resolve from Pi's working directory. Absolute paths and `~/` paths 
 ## Markdown and AGENTS.md
 
 - A referenced `.md` file can contain `@` references. Those paths resolve relative to that Markdown file.
-- Pi's automatically loaded `AGENTS.md` and `AGENTS.override.md` files also expand their `@` references on each agent turn, relative to each context file. The extension uses Pi's loaded text; it does not reread those context files.
+- Pi's automatically loaded `AGENTS.md` and `AGENTS.override.md` files expand their `@` references **once per session**, on the first prompt after they load. Paths resolve relative to each context file. Later prompts do not auto-inject them again; resumed sessions keep their earlier injection. The extension uses Pi's loaded text; it does not reread those context files.
 - Expansion stops after **one level**: references inside additionally included files are not followed. With a line range, only selected Markdown lines are scanned.
-- Duplicate references from the prompt and loaded context files inject once per turn.
-- Queued steering and follow-ups keep their `@` references; their contents reach the model when the queued prompt runs.
+- Duplicate references from the first prompt and loaded context files inject only once.
+- Queued steering and follow-ups keep their `@` references; only references typed in the queued prompt are injected when it runs.
 
 ## Limits and privacy
 
